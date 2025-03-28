@@ -30,22 +30,29 @@ class SelfAttention(nn.Module):
         
         self.num_heads = num_heads
         self.feature_dim = feature_dim
-        self.head_dim = feature_dim // num_heads
         
-        assert self.head_dim * num_heads == feature_dim, "feature_dim must be divisible by num_heads"
+        # Ensure head_dim is valid
+        if feature_dim % num_heads != 0:
+            # Adjust feature_dim to be divisible by num_heads
+            self.adjusted_feature_dim = ((feature_dim // num_heads) + 1) * num_heads
+            print(f"Warning: feature_dim {feature_dim} not divisible by num_heads {num_heads}. Adjusting to {self.adjusted_feature_dim}")
+        else:
+            self.adjusted_feature_dim = feature_dim
+            
+        self.head_dim = self.adjusted_feature_dim // num_heads
         
         # Query, Key, Value projections
-        self.query = nn.Linear(feature_dim, feature_dim)
-        self.key = nn.Linear(feature_dim, feature_dim)
-        self.value = nn.Linear(feature_dim, feature_dim)
+        self.query = nn.Linear(feature_dim, self.adjusted_feature_dim)
+        self.key = nn.Linear(feature_dim, self.adjusted_feature_dim)
+        self.value = nn.Linear(feature_dim, self.adjusted_feature_dim)
         
         # Output projection
-        self.output = nn.Linear(feature_dim, feature_dim)
+        self.output = nn.Linear(self.adjusted_feature_dim, feature_dim)
         
         # Dropout
         self.dropout = nn.Dropout(dropout)
         
-        # Layer normalization
+        # Layer normalization with correct shape
         self.layer_norm = nn.LayerNorm(feature_dim)
     
     def forward(self, x):
@@ -83,7 +90,7 @@ class SelfAttention(nn.Module):
         context = torch.matmul(attention_weights, value)
         
         # Reshape and project to output
-        context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, self.feature_dim)
+        context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, self.adjusted_feature_dim)
         output = self.output(context)
         
         # Residual connection
@@ -132,7 +139,13 @@ class TransformerLayer(nn.Module):
     def __init__(self, feature_dim, hidden_dim, num_heads=4, dropout=0.1):
         super(TransformerLayer, self).__init__()
         
+        # Store feature_dim for creating correct normalization layers
+        self.feature_dim = feature_dim
+        
+        # Create self-attention with the correct feature dimension
         self.attention = SelfAttention(feature_dim, num_heads, dropout)
+        
+        # Create feed-forward with the correct feature dimension
         self.feed_forward = FeedForward(feature_dim, hidden_dim, dropout)
     
     def forward(self, x):
@@ -145,6 +158,12 @@ class TransformerLayer(nn.Module):
         Returns:
             torch.Tensor: Processed features [batch_size, seq_len, feature_dim]
         """
+        # Check input dimension to catch errors early
+        batch_size, seq_len, feature_dim = x.size()
+        if feature_dim != self.feature_dim:
+            print(f"Warning: Input feature dimension {feature_dim} doesn't match expected feature_dim {self.feature_dim}")
+        
+        # Apply attention and feed-forward
         x = self.attention(x)
         x = self.feed_forward(x)
         
@@ -190,12 +209,30 @@ class UncertaintyEstimator(nn.Module):
         return probs, uncertainty
 
 
+class FeatureProjector(nn.Module):
+    """Projects features to a common dimension for transformer processing"""
+    
+    def __init__(self, input_dim, output_dim, dropout=0.1):
+        super(FeatureProjector, self).__init__()
+        
+        self.projector = nn.Sequential(
+            nn.Linear(input_dim, output_dim),
+            nn.LayerNorm(output_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+    
+    def forward(self, x):
+        return self.projector(x)
+
+
 class ClassificationNetwork(nn.Module):
     """Classification network for AI-generated image detection"""
     
     def __init__(self, 
                  manifold_dim=32,         # Dimension of manifold features
                  topo_dim=32,             # Dimension of topological features
+                 feature_dim=64,          # Common feature dimension for transformer
                  hidden_dim=128,          # Hidden dimension
                  num_layers=3,            # Number of transformer layers
                  num_heads=4,             # Number of attention heads
@@ -203,35 +240,38 @@ class ClassificationNetwork(nn.Module):
                 ):
         super(ClassificationNetwork, self).__init__()
         
-        # Feature dimension after combination
-        self.feature_dim = manifold_dim + topo_dim
+        # Store dimensions
+        self.manifold_dim = manifold_dim
+        self.topo_dim = topo_dim
+        self.feature_dim = feature_dim
         
-        # Projection for manifold and topological features
-        self.manifold_proj = nn.Linear(manifold_dim, manifold_dim)
-        self.topo_proj = nn.Linear(topo_dim, topo_dim)
+        # Feature projectors to common dimension
+        self.manifold_projector = FeatureProjector(manifold_dim, feature_dim // 2, dropout)
+        self.topo_projector = FeatureProjector(topo_dim, feature_dim // 2, dropout)
         
-        # Feature type embedding
-        self.feature_type_embedding = nn.Embedding(2, self.feature_dim)
+        # Feature type embeddings
+        self.manifold_type_embedding = nn.Parameter(torch.randn(1, 1, feature_dim // 2))
+        self.topo_type_embedding = nn.Parameter(torch.randn(1, 1, feature_dim // 2))
         
         # Transformer layers
         self.transformer_layers = nn.ModuleList([
             TransformerLayer(
-                feature_dim=self.feature_dim,
+                feature_dim=feature_dim,
                 hidden_dim=hidden_dim,
                 num_heads=num_heads,
                 dropout=dropout
             ) for _ in range(num_layers)
         ])
         
-        # Global pooling
+        # Global attention pooling
         self.global_attention_pool = nn.Sequential(
-            nn.Linear(self.feature_dim, 1),
+            nn.Linear(feature_dim, 1),
             nn.Softmax(dim=1)
         )
         
         # Classification head
         self.classifier = nn.Sequential(
-            nn.Linear(self.feature_dim, hidden_dim),
+            nn.Linear(feature_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, hidden_dim // 2),
@@ -241,7 +281,7 @@ class ClassificationNetwork(nn.Module):
         )
         
         # Uncertainty estimation
-        self.uncertainty = UncertaintyEstimator(self.feature_dim)
+        self.uncertainty = UncertaintyEstimator(feature_dim)
     
     def forward(self, manifold_features, topo_features):
         """
@@ -258,24 +298,28 @@ class ClassificationNetwork(nn.Module):
                 - uncertainty: Uncertainty scores [batch_size]
         """
         batch_size = manifold_features.size(0)
+        device = manifold_features.device
         
-        # Project features
-        manifold_features = self.manifold_proj(manifold_features)
-        topo_features = self.topo_proj(topo_features)
+        # Project features to common dimension
+        manifold_projected = self.manifold_projector(manifold_features)  # [batch_size, feature_dim//2]
+        topo_projected = self.topo_projector(topo_features)  # [batch_size, feature_dim//2]
         
-        # Create feature sequence with feature type embedding
-        feature_types = torch.tensor([0, 1], device=manifold_features.device).unsqueeze(0).expand(batch_size, -1)
-        type_embeddings = self.feature_type_embedding(feature_types)
+        # Add sequence dimension and type embeddings
+        manifold_seq = manifold_projected.unsqueeze(1)  # [batch_size, 1, feature_dim//2]
+        topo_seq = topo_projected.unsqueeze(1)  # [batch_size, 1, feature_dim//2]
         
-        # Combine features with type embeddings
-        manifold_with_type = manifold_features.unsqueeze(1) + type_embeddings[:, 0:1, :]
-        topo_with_type = topo_features.unsqueeze(1) + type_embeddings[:, 1:2, :]
+        # Add type embeddings
+        manifold_embedding = self.manifold_type_embedding.expand(batch_size, -1, -1)
+        topo_embedding = self.topo_type_embedding.expand(batch_size, -1, -1)
         
-        # Concatenate features to form sequence
-        feature_sequence = torch.cat([
-            manifold_with_type, 
-            topo_with_type
-        ], dim=1)
+        manifold_seq = manifold_seq + manifold_embedding
+        topo_seq = topo_seq + topo_embedding
+        
+        # Concatenate along feature dimension
+        manifold_topo_combined = torch.cat([manifold_seq, topo_seq], dim=2)  # [batch_size, 1, feature_dim]
+        
+        # Replicate the combined features to create a sequence
+        feature_sequence = manifold_topo_combined.expand(-1, 2, -1)  # [batch_size, 2, feature_dim]
         
         # Apply transformer layers
         for layer in self.transformer_layers:
@@ -292,6 +336,113 @@ class ClassificationNetwork(nn.Module):
         probs, uncertainty = self.uncertainty(pooled_features)
         
         return logits, probs, uncertainty
+    
+    def mse_loss(self, x, x_target):
+        """
+        Compute MSE loss between two tensors
+        
+        Args:
+            x (torch.Tensor): Input tensor
+            x_target (torch.Tensor): Target tensor
+            
+        Returns:
+            torch.Tensor: MSE loss
+        """
+        return F.mse_loss(x, x_target)
+
+
+class FeatureFusionModule(nn.Module):
+    """Optional module for feature fusion with attention"""
+    
+    def __init__(self, manifold_dim, topo_dim, output_dim, dropout=0.1):
+        super(FeatureFusionModule, self).__init__()
+        
+        # Feature projections
+        self.manifold_proj = nn.Linear(manifold_dim, output_dim)
+        self.topo_proj = nn.Linear(topo_dim, output_dim)
+        
+        # Cross-attention
+        self.cross_attention = nn.Sequential(
+            nn.Linear(output_dim * 2, output_dim),
+            nn.ReLU(),
+            nn.Linear(output_dim, 2),
+            nn.Softmax(dim=1)
+        )
+        
+        # Output projection
+        self.output_proj = nn.Sequential(
+            nn.Linear(output_dim, output_dim),
+            nn.LayerNorm(output_dim),
+            nn.Dropout(dropout)
+        )
+    
+    def forward(self, manifold_features, topo_features):
+        # Project features
+        manifold_proj = self.manifold_proj(manifold_features)
+        topo_proj = self.topo_proj(topo_features)
+        
+        # Concat for attention
+        concat_features = torch.cat([manifold_proj, topo_proj], dim=1)
+        
+        # Compute attention weights
+        attention = self.cross_attention(concat_features)
+        
+        # Apply attention
+        fused = attention[:, 0:1] * manifold_proj + attention[:, 1:2] * topo_proj
+        
+        # Final projection
+        output = self.output_proj(fused)
+        
+        return output
+
+
+class MultiScaleFeatureProcessor(nn.Module):
+    """Process features at multiple scales for better classification"""
+    
+    def __init__(self, feature_dim, num_scales=3, dropout=0.1):
+        super(MultiScaleFeatureProcessor, self).__init__()
+        
+        # Multi-scale processing
+        self.scale_processors = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(feature_dim, feature_dim),
+                nn.LayerNorm(feature_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout)
+            ) for _ in range(num_scales)
+        ])
+        
+        # Scale attention
+        self.scale_attention = nn.Sequential(
+            nn.Linear(feature_dim * num_scales, num_scales),
+            nn.Softmax(dim=1)
+        )
+        
+        # Output projection
+        self.output_proj = nn.Linear(feature_dim, feature_dim)
+    
+    def forward(self, x):
+        # Process at different scales
+        multi_scale_features = []
+        for processor in self.scale_processors:
+            scaled_features = processor(x)
+            multi_scale_features.append(scaled_features)
+        
+        # Concatenate for attention
+        concat_features = torch.cat(multi_scale_features, dim=1)
+        
+        # Compute attention weights
+        attention = self.scale_attention(concat_features)
+        
+        # Apply attention
+        output = torch.zeros_like(x)
+        for i, features in enumerate(multi_scale_features):
+            output += attention[:, i:i+1] * features
+        
+        # Final projection
+        output = self.output_proj(output)
+        
+        return output
 
 
 def classify_features(manifold_features, topo_features, device='cpu'):
@@ -322,6 +473,37 @@ def classify_features(manifold_features, topo_features, device='cpu'):
     print(f"Uncertainty: {uncertainty.item():.4f}")
     
     return predictions, probs, uncertainty
+
+
+# Auxiliary loss functions for training
+def contrastive_loss(features1, features2, labels, margin=1.0):
+    """Contrastive loss for similar/dissimilar feature pairs"""
+    distances = F.pairwise_distance(features1, features2)
+    similar_loss = (labels * distances**2)
+    dissimilar_loss = ((1-labels) * F.relu(margin - distances)**2)
+    return torch.mean(similar_loss + dissimilar_loss)
+
+
+def triplet_loss(anchor, positive, negative, margin=1.0):
+    """Triplet loss for feature embedding learning"""
+    pos_dist = F.pairwise_distance(anchor, positive)
+    neg_dist = F.pairwise_distance(anchor, negative)
+    return torch.mean(F.relu(pos_dist - neg_dist + margin))
+
+
+class FocalLoss(nn.Module):
+    """Focal loss for handling class imbalance"""
+    
+    def __init__(self, alpha=0.25, gamma=2.0):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+    
+    def forward(self, inputs, targets):
+        BCE_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+        pt = torch.exp(-BCE_loss)
+        focal_loss = self.alpha * (1-pt)**self.gamma * BCE_loss
+        return torch.mean(focal_loss)
 
 
 if __name__ == "__main__":

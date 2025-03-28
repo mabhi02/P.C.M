@@ -27,14 +27,12 @@ import pytorch_lightning as pl
 
 
 class PersistentHomologyLayer(nn.Module):
-    """Simplified persistent homology features with reduced complexity"""
+    """Computes persistent homology features from point cloud data"""
     
-    def __init__(self, max_edge_length=2.0, num_filtrations=20, max_dimension=1):
+    def __init__(self, max_edge_length=2.0, num_filtrations=50, max_dimension=2):
         super(PersistentHomologyLayer, self).__init__()
         
-        # Reduce max_dimension from 2 to 1 (skipping dimension 2 homology)
         self.max_edge_length = max_edge_length
-        # Reduce num_filtrations from 50 to 20
         self.num_filtrations = num_filtrations
         self.max_dimension = max_dimension
         
@@ -54,14 +52,7 @@ class PersistentHomologyLayer(nn.Module):
             dict: Dictionary containing persistence diagrams and Betti numbers
         """
         batch_size = x.size(0)
-        device = x.device
-        
-        # Reduce computation: process only a subset of points
-        # Use at most 50 points per batch item
-        max_points = min(50, x.size(1))
-        if x.size(1) > max_points:
-            indices = torch.randperm(x.size(1))[:max_points]
-            x = x[:, indices, :]
+        device = x.device  # Remember the original device
         
         # Detach and convert to numpy for gudhi
         x_np = x.detach().cpu().numpy()
@@ -76,11 +67,11 @@ class PersistentHomologyLayer(nn.Module):
             point_cloud = x_np[i]
             distances = squareform(pdist(point_cloud))
             
-            # Create Vietoris-Rips complex with reduced max_dimension
+            # Create Vietoris-Rips complex
             rips_complex = gd.RipsComplex(distance_matrix=distances)
             simplex_tree = rips_complex.create_simplex_tree(max_dimension=self.max_dimension+1)
             
-            # Compute persistence with reduced threshold
+            # Compute persistence
             simplex_tree.compute_persistence()
             
             # Get persistence diagram - FIXED VERSION
@@ -89,9 +80,7 @@ class PersistentHomologyLayer(nn.Module):
                 # Get persistence intervals for this dimension
                 intervals = simplex_tree.persistence_intervals_in_dimension(dim)
                 # Format each interval as (dimension, (birth, death))
-                # Take only the most significant intervals for efficiency
-                significant_intervals = intervals[:20] if len(intervals) > 20 else intervals
-                for interval in significant_intervals:
+                for interval in intervals:
                     if interval[1] != float('inf'):  # Skip infinite intervals
                         diagram.append((dim, interval))
             
@@ -99,7 +88,7 @@ class PersistentHomologyLayer(nn.Module):
             diagram_tensor = self._convert_diagram_to_tensor(diagram)
             all_diagrams.append(diagram_tensor)
             
-            # Compute Betti curves with fewer points
+            # Compute Betti curves
             filtration_values = self.filtration_values.detach().cpu().numpy()
             betti_curves = self._compute_betti_curves(simplex_tree, filtration_values)
             all_betti_curves.append(betti_curves)
@@ -116,8 +105,7 @@ class PersistentHomologyLayer(nn.Module):
     def _convert_diagram_to_tensor(self, diagram):
         """Convert GUDHI persistence diagram to torch tensor"""
         # Create empty tensors for each homology dimension
-        # Reduce max_points from 100 to 20
-        max_points = 20  # Maximum number of points to keep
+        max_points = 100  # Maximum number of points to keep
         diagram_tensors = []
         
         for dim in range(self.max_dimension + 1):
@@ -150,41 +138,29 @@ class PersistentHomologyLayer(nn.Module):
     
     def _compute_betti_curves(self, simplex_tree, filtration_values):
         """Compute Betti curves for each dimension"""
-        # Compute fewer Betti curves
         betti_curves = []
         
         for dim in range(self.max_dimension + 1):
             betti_numbers = []
             
-            # Use fewer filtration values for efficiency
-            step = max(1, len(filtration_values) // 10)
-            for epsilon in filtration_values[::step]:
+            for epsilon in filtration_values:
                 # Count number of features alive at this filtration value
                 betti = simplex_tree.persistent_betti_numbers(0, epsilon)
                 betti_number = betti[dim] if dim < len(betti) else 0
                 betti_numbers.append(betti_number)
             
-            # Interpolate back to original size if needed
-            if len(betti_numbers) < len(filtration_values):
-                betti_numbers = np.interp(
-                    np.linspace(0, 1, len(filtration_values)),
-                    np.linspace(0, 1, len(betti_numbers)),
-                    betti_numbers
-                ).tolist()
-            
             betti_curves.append(betti_numbers)
         
         return torch.tensor(betti_curves, dtype=torch.float32)
 
+
 class PersistenceImageLayer(nn.Module):
-    """Simplified version that converts persistence diagrams to persistence images"""
+    """Converts persistence diagrams to persistence images"""
     
-    def __init__(self, resolution=(10, 10), sigma=0.2, weight_function=None):
+    def __init__(self, resolution=(20, 20), sigma=0.1, weight_function=None):
         super(PersistenceImageLayer, self).__init__()
         
-        # Reduce resolution from (20, 20) to (10, 10)
         self.resolution = resolution
-        # Increase sigma from 0.1 to 0.2 for smoother images (less detail)
         self.sigma = sigma
         
         # Default weight function: linear weighting by persistence
@@ -195,7 +171,7 @@ class PersistenceImageLayer(nn.Module):
     
     def forward(self, persistence_diagrams):
         """
-        Convert persistence diagrams to persistence images - simplified version
+        Convert persistence diagrams to persistence images
         
         Args:
             persistence_diagrams (torch.Tensor): [batch_size, num_dimensions, max_points, 2]
@@ -204,20 +180,16 @@ class PersistenceImageLayer(nn.Module):
             torch.Tensor: Persistence images [batch_size, num_dimensions, resolution[0], resolution[1]]
         """
         batch_size, num_dimensions, max_points, _ = persistence_diagrams.shape
-        device = persistence_diagrams.device
+        device = persistence_diagrams.device  # Get the device
         
         # Prepare output container
         persistence_images = []
         
-        # Process only the most important dimension (0) for speed
-        # Or process fewer dimensions if you still want multiple
-        process_dims = min(2, num_dimensions)
-        
-        # Process each batch item
+        # Process each batch and dimension
         for i in range(batch_size):
             dim_images = []
             
-            for dim in range(process_dims):
+            for dim in range(num_dimensions):
                 # Get diagram points
                 diagram = persistence_diagrams[i, dim]
                 
@@ -229,27 +201,23 @@ class PersistenceImageLayer(nn.Module):
                     # Compute weight values
                     weights = self.weight_function(non_zero_points)
                     
-                    # Create persistence image - simplified
-                    pi = self._diagram_to_image_simplified(non_zero_points, weights)
+                    # Create persistence image
+                    pi = self._diagram_to_image(non_zero_points, weights)
                 else:
                     # Empty diagram
                     pi = torch.zeros(self.resolution, dtype=torch.float32, device=device)
                 
                 dim_images.append(pi)
             
-            # If we're processing fewer dimensions, pad with zeros
-            while len(dim_images) < num_dimensions:
-                dim_images.append(torch.zeros(self.resolution, dtype=torch.float32, device=device))
-                
             # Stack dimensions
             persistence_images.append(torch.stack(dim_images, dim=0))
         
         # Stack batch and ensure it's on the right device
         return torch.stack(persistence_images, dim=0).to(device)
     
-    def _diagram_to_image_simplified(self, diagram, weights):
-        """Simplified version of diagram to image conversion"""
-        device = diagram.device
+    def _diagram_to_image(self, diagram, weights):
+        """Convert a single persistence diagram to an image"""
+        device = diagram.device  # Get the device
         births = diagram[:, 0]
         deaths = diagram[:, 1]
         
@@ -260,15 +228,6 @@ class PersistenceImageLayer(nn.Module):
         
         # Initialize image
         image = torch.zeros(self.resolution, dtype=torch.float32, device=device)
-        
-        # Take only top points by persistence for efficiency
-        max_points = min(10, len(births))
-        if len(births) > max_points:
-            persistence = deaths - births
-            _, indices = torch.topk(persistence, max_points)
-            births = births[indices]
-            deaths = deaths[indices]
-            weights = weights[indices]
         
         # Add Gaussian for each persistence point
         for i in range(len(births)):
@@ -282,7 +241,7 @@ class PersistenceImageLayer(nn.Module):
                 x = birth
                 y = persistence
                 
-                # Apply Gaussian kernel - simplified for speed
+                # Apply Gaussian kernel
                 gaussian = torch.exp(-((xx - x)**2 + (yy - y)**2) / (2 * self.sigma**2))
                 
                 # Apply weight
@@ -293,53 +252,54 @@ class PersistenceImageLayer(nn.Module):
         
         return image
 
+
 class TopologicalFeatureExtraction(nn.Module):
-    """Simplified topological feature extraction module"""
+    """Complete topological feature extraction module"""
     
     def __init__(self, 
                  input_dim=32,           # Input feature dimension
                  hidden_dim=64,          # Hidden dimension
                  output_dim=32,          # Output feature dimension
                  max_edge_length=2.0,    # Maximum edge length for filtration
-                 num_filtrations=20,     # Reduced from 50 to 20
-                 max_dimension=1,        # Reduced from 2 to 1
-                 persistence_image_resolution=(10, 10)  # Reduced from (20, 20) to (10, 10)
+                 num_filtrations=50,     # Number of filtration values
+                 max_dimension=2,        # Maximum homology dimension
+                 persistence_image_resolution=(20, 20)  # Resolution of persistence images
                 ):
         super(TopologicalFeatureExtraction, self).__init__()
         
-        # Persistence homology layer - simplified
+        # Persistence homology layer
         self.persistent_homology = PersistentHomologyLayer(
             max_edge_length=max_edge_length,
             num_filtrations=num_filtrations,
             max_dimension=max_dimension
         )
         
-        # Persistence image layer - simplified
+        # Persistence image layer
         self.persistence_image = PersistenceImageLayer(
             resolution=persistence_image_resolution
         )
         
-        # Process Betti curves - simplified
+        # Process Betti curves
         self.betti_processor = nn.Sequential(
-            nn.Linear(num_filtrations, hidden_dim // 2),  # Reduced hidden dimension
+            nn.Linear(num_filtrations, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim // 2, output_dim)
+            nn.Linear(hidden_dim, output_dim)
         )
         
-        # Process persistence images - simplified
+        # Process persistence images
         self.image_processor = nn.Sequential(
-            nn.Conv2d(max_dimension + 1, 8, kernel_size=3, padding=1),  # Reduced channels
+            nn.Conv2d(max_dimension + 1, 16, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.Conv2d(8, 16, kernel_size=3, padding=1),  # Reduced channels
+            nn.Conv2d(16, 32, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d((2, 2)),  # Smaller pooling size
+            nn.AdaptiveAvgPool2d((4, 4)),
             nn.Flatten(),
-            nn.Linear(16 * 2 * 2, hidden_dim // 2),  # Reduced dimension
+            nn.Linear(32 * 4 * 4, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim // 2, output_dim)
+            nn.Linear(hidden_dim, output_dim)
         )
         
-        # Combine features - simplified
+        # Combine features
         self.output_layer = nn.Sequential(
             nn.Linear(output_dim * 2, output_dim),
             nn.LayerNorm(output_dim)
@@ -347,7 +307,7 @@ class TopologicalFeatureExtraction(nn.Module):
     
     def forward(self, x):
         """
-        Extract topological features from the manifold - simplified version
+        Extract topological features from the manifold
         
         Args:
             x (torch.Tensor): Manifold points [batch_size, num_points, feature_dim]
@@ -355,7 +315,7 @@ class TopologicalFeatureExtraction(nn.Module):
         Returns:
             torch.Tensor: Topological features [batch_size, output_dim]
         """
-        device = x.device
+        device = x.device  # Store the original device
         
         # Compute persistent homology
         homology_data = self.persistent_homology(x)
@@ -366,17 +326,25 @@ class TopologicalFeatureExtraction(nn.Module):
         persistence_images = self.persistence_image(persistence_diagrams).to(device)
         
         # Process Betti curves
-        # Simplified: just use the first dimension for speed
+        # Flatten for each batch item (concatenate dimensions)
         batch_size = betti_curves.size(0)
-        dim = 0  # Only use dimension 0 for speed
-        dim_betti = betti_curves[:, dim, :]
-        betti_features = self.betti_processor(dim_betti)
+        num_dims = betti_curves.size(1)
+        num_filtrations = betti_curves.size(2)
+        
+        betti_features = []
+        for dim in range(num_dims):
+            dim_betti = betti_curves[:, dim, :]
+            dim_features = self.betti_processor(dim_betti)
+            betti_features.append(dim_features)
+        
+        # Combine all dimensions
+        combined_betti_features = sum(betti_features) / len(betti_features)
         
         # Process persistence images
         image_features = self.image_processor(persistence_images)
         
         # Combine features
-        combined_features = torch.cat([betti_features, image_features], dim=1)
+        combined_features = torch.cat([combined_betti_features, image_features], dim=1)
         output_features = self.output_layer(combined_features)
         
         return output_features, {
@@ -384,6 +352,7 @@ class TopologicalFeatureExtraction(nn.Module):
             'betti_curves': betti_curves,
             'persistence_images': persistence_images
         }
+
 
 class TopologicalLoss(nn.Module):
     """Loss function based on topological features"""
