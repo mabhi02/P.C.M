@@ -1,0 +1,42 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environment
+myenv/
+venv/
+env/
+.env
+
+# Model files (these can be large)
+models/
+
+# Results folder (typically contains outputs that can be regenerated)
+results/
+
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# macOS
+.DS_Store
+
+# Data files (if you have large datasets, you may want to ignore them)
+# Uncomment if needed
+# *.csv
+# *.json
+
+# Logs
+logs/
+*.log
