@@ -28,3 +28,4 @@ ipython>=7.0.0
 
 # Utilities
 requests>=2.25.0
+kagglehub
