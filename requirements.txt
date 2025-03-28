@@ -1,6 +1,4 @@
-# Core libraries
-torch>=1.10.0
-torchvision>=0.11.0
+# install torch & torchvision versions that works
 numpy>=1.20.0
 scipy>=1.7.0
 matplotlib>=3.4.0

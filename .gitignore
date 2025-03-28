@@ -12,6 +12,7 @@ build/
 .ipynb_checkpoints
 
 # Environment
+goatvenv/
 myenv/
 venv/
 env/

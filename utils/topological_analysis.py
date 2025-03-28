@@ -73,8 +73,15 @@ class PersistentHomologyLayer(nn.Module):
             # Compute persistence
             simplex_tree.compute_persistence()
             
-            # Get persistence diagram
-            diagram = simplex_tree.persistence_diagram()
+            # Get persistence diagram - FIXED VERSION
+            diagram = []
+            for dim in range(self.max_dimension + 1):
+                # Get persistence intervals for this dimension
+                intervals = simplex_tree.persistence_intervals_in_dimension(dim)
+                # Format each interval as (dimension, (birth, death))
+                for interval in intervals:
+                    if interval[1] != float('inf'):  # Skip infinite intervals
+                        diagram.append((dim, interval))
             
             # Convert to tensor format and store
             diagram_tensor = self._convert_diagram_to_tensor(diagram)
