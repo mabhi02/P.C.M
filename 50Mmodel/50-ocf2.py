@@ -329,21 +329,21 @@ classification_criterion = nn.CrossEntropyLoss()
 # Adjust learning rates slightly for the medium model (slightly lower than small model)
 feature_optimizer = optim.Adam(list(feature_network.parameters()) + 
                               list(tensor_computer.parameters()) + 
-                              list(dim_adapter.parameters()), lr=8e-5)
-manifold_optimizer = optim.Adam(manifold_module.parameters(), lr=8e-5)
+                              list(dim_adapter.parameters()), lr=1e-4)
+manifold_optimizer = optim.Adam(manifold_module.parameters(), lr=1e-4)
 topo_optimizer = optim.Adam(list(point_cloud_generator.parameters()) +
-                           list(topo_module.parameters()), lr=8e-5)
-classifier_optimizer = optim.Adam(classifier.parameters(), lr=8e-5)
+                           list(topo_module.parameters()), lr=1e-4)
+classifier_optimizer = optim.Adam(classifier.parameters(), lr=1e-4)
 
 # Learning rate schedulers with adjusted patience for the medium model
 feature_scheduler = optim.lr_scheduler.ReduceLROnPlateau(feature_optimizer, mode='min', 
-                                                        factor=0.5, patience=3, min_lr=1e-6)
+                                                        factor=0.5, patience=3, min_lr=1e-5)
 manifold_scheduler = optim.lr_scheduler.ReduceLROnPlateau(manifold_optimizer, mode='min', 
-                                                         factor=0.5, patience=3, min_lr=1e-6)
+                                                         factor=0.5, patience=3, min_lr=1e-5)
 topo_scheduler = optim.lr_scheduler.ReduceLROnPlateau(topo_optimizer, mode='min', 
-                                                     factor=0.5, patience=3, min_lr=1e-6)
+                                                     factor=0.5, patience=3, min_lr=1e-5)
 classifier_scheduler = optim.lr_scheduler.ReduceLROnPlateau(classifier_optimizer, mode='min', 
-                                                           factor=0.5, patience=3, min_lr=1e-6)
+                                                           factor=0.5, patience=3, min_lr=1e-5)
 
 def vae_loss(recon_x, x, mu, logvar):
     """

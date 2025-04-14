@@ -1,0 +1,6 @@
+Editing Hyperparams at 1000/32K for epoch 1 for small model:
+
+1. 1e-3 with batch = 4, grad_accum = 8 --> 57.2 acc
+2. 1e-4 with batch = 4, grad_accum = 8 --> 56.6 acc
+3. 1e-3 with batch = 8, grad_accum = 16 --> 57.5 acc
+4. 1e-4 with batch = 8, grad_accum = 16 --> 57.1 acc
