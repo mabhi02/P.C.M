@@ -17,6 +17,7 @@ myenv/
 venv/
 env/
 .env
+ai_vs_human_gener/
 
 # Model files (these can be large)
 models/
